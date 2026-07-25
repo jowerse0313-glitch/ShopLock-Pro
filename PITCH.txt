@@ -1,0 +1,9 @@
+ShopLock – Simple pitch you can use
+
+"Most small shops leave their WiFi and POS wide open. I come in once, lock everything down properly, put a quiet monitor on it, and then check it every month so nothing new sneaks on. One-time setup is $249, then $79 a month. Takes about 45–60 minutes the first time. You keep full control – I just make sure nobody else is on your network."
+
+Key points to hit:
+- Protects the POS (payment machine)
+- Stops random people / old devices from staying connected
+- Gives you a clear list of every device on the network
+- Monthly peace of mind without you having to think about it
