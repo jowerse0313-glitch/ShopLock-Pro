@@ -10,19 +10,23 @@ No Python needed. Works on almost every Windows PC / POS terminal.
 3. Double-click `Run-ShopLock.bat`
 4. Follow the menu
 
-## Create a single EXE (recommended for distribution)
+## Create a single EXE (recommended)
 
 On any Windows machine with PowerShell:
 
-1. Open PowerShell in the ShopLock-Pro folder
-2. Run:
-   ```
-   .\Build-EXE.ps1
-   ```
-3. It will install the PS2EXE module (one time) and create `ShopLock.exe`
+```powershell
+.\Build-EXE.ps1
+```
 
-You can then put just `ShopLock.exe` on a USB stick.  
-When it runs it will automatically create the `reports` and `alerts` folders next to itself.
+This will:
+1. Install PS2EXE if needed
+2. Compile `ShopLock.ps1` into `ShopLock.exe`
+3. **Automatically code-sign** the EXE if a certificate is present and `signtool.exe` is available
+
+### About code signing
+- If you have a code-signing certificate installed (or a USB token plugged in), the builder will sign the EXE with SHA256 + timestamp.
+- If no certificate is found, it simply skips signing and gives you a working unsigned EXE.
+- Once you buy a certificate later, just re-run `.\Build-EXE.ps1` and it will sign automatically.
 
 ## What it does
 
@@ -41,9 +45,9 @@ When it runs it will automatically create the `reports` and `alerts` folders nex
 
 - `Run-ShopLock.bat` – launcher for the .ps1 version
 - `ShopLock.ps1` – the main script
-- `Build-EXE.ps1` – creates the single .exe
+- `Build-EXE.ps1` – creates + optionally signs the single .exe
 - `PITCH.txt` – sales pitch
-- `reports/` and `alerts/` – created automatically
+- `reports/` and `alerts/` – created automatically at runtime
 
 ---
 
