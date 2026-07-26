@@ -1,290 +1,238 @@
-# ShopLock-Pro v1.0
-# Network & POS lockdown toolkit for independent coffee shops
-# Author: Raymond / ShopLock
-# Run via Run-ShopLock.bat (ExecutionPolicy Bypass)
+# ShopLock Portable Toolkit - Pure PowerShell (no Python needed)
+# Double-click Run-ShopLock.bat or run this script directly
 
-#Requires -Version 5.1
+$ErrorActionPreference = "SilentlyContinue"
+$Host.UI.RawUI.WindowTitle = "ShopLock Toolkit"
 
-$ErrorActionPreference = "Continue"
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ReportsDir = Join-Path $ScriptDir "reports"
-$AlertsDir  = Join-Path $ScriptDir "alerts"
+# ===== CONFIG =====
+$config = @{
+    YourName       = "Raymond"
+    BusinessName   = "ShopLock by Raymond"
+    ReportEmail    = "raymondrayray777@gmail.com"
+    SetupFee       = 249
+    MonthlyPrice   = 79
+}
 
-# Ensure folders exist
-if (-not (Test-Path $ReportsDir)) { New-Item -ItemType Directory -Path $ReportsDir -Force | Out-Null }
-if (-not (Test-Path $AlertsDir))  { New-Item -ItemType Directory -Path $AlertsDir  -Force | Out-Null }
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$reportsDir = Join-Path $scriptDir "reports"
+$alertsDir  = Join-Path $scriptDir "alerts"
 
-function Show-Header {
+if (-not (Test-Path $reportsDir)) { New-Item -ItemType Directory -Path $reportsDir | Out-Null }
+if (-not (Test-Path $alertsDir))  { New-Item -ItemType Directory -Path $alertsDir  | Out-Null }
+
+function Show-Banner {
     Clear-Host
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "   ShopLock-Pro  |  Network Lockdown" -ForegroundColor Cyan
-    Write-Host "   For coffee shops & small restaurants" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "=======================================================" -ForegroundColor Cyan
+    Write-Host "  $($config.BusinessName)" -ForegroundColor Cyan
+    Write-Host "  Operator: $($config.YourName)" -ForegroundColor Cyan
+    Write-Host "=======================================================" -ForegroundColor Cyan
+    Write-Host "  Only run this on networks you have permission to secure." -ForegroundColor Yellow
     Write-Host ""
 }
 
-function Get-LocalNetworkInfo {
-    $adapters = Get-NetIPAddress -AddressFamily IPv4 | Where-Object {
-        $_.IPAddress -notlike "127.*" -and $_.PrefixOrigin -ne "WellKnown"
-    } | Select-Object -First 1
-
-    if (-not $adapters) {
-        return $null
-    }
-
-    $ip = $adapters.IPAddress
-    $prefix = $adapters.PrefixLength
-    $iface = $adapters.InterfaceAlias
-
-    # Simple subnet calculation (works for common /24)
-    $ipParts = $ip.Split('.')
-    $subnet = "$($ipParts[0]).$($ipParts[1]).$($ipParts[2]).0"
-    $broadcastHint = "$($ipParts[0]).$($ipParts[1]).$($ipParts[2]).255"
-
-    return [PSCustomObject]@{
-        IP          = $ip
-        Prefix      = $prefix
-        Interface   = $iface
-        Subnet      = $subnet
-        Broadcast   = $broadcastHint
-    }
-}
-
-function Scan-NetworkDevices {
-    param($NetInfo)
-
-    Write-Host "[*] Scanning local network devices..." -ForegroundColor Yellow
-    Write-Host "    Local IP : $($NetInfo.IP)" -ForegroundColor Gray
-    Write-Host "    Interface: $($NetInfo.Interface)" -ForegroundColor Gray
-    Write-Host ""
-
+function Get-NetworkDevices {
     $devices = @()
+    $arpOutput = arp -a 2>$null
 
-    # Method 1: ARP table (fast, shows recently active devices)
-    try {
-        $arp = Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-               Where-Object { $_.State -eq "Reachable" -or $_.State -eq "Stale" -or $_.State -eq "Permanent" } |
-               Where-Object { $_.IPAddress -notlike "224.*" -and $_.IPAddress -notlike "239.*" }
-
-        foreach ($entry in $arp) {
-            $hostname = $null
-            try {
-                $hostname = [System.Net.Dns]::GetHostEntry($entry.IPAddress).HostName
-            } catch {}
-
-            $devices += [PSCustomObject]@{
-                IP       = $entry.IPAddress
-                MAC      = $entry.LinkLayerAddress
-                Hostname = if ($hostname) { $hostname } else { "-" }
-                State    = $entry.State
-                Source   = "ARP"
-            }
-        }
-    } catch {
-        Write-Host "    [!] ARP scan limited (may need Admin)" -ForegroundColor DarkYellow
-    }
-
-    # Method 2: Quick ping sweep of common range if /24 (optional, slower)
-    if ($NetInfo.Prefix -eq 24 -and $devices.Count -lt 5) {
-        Write-Host "    Running light ping sweep for more devices..." -ForegroundColor Gray
-        $base = ($NetInfo.IP -split '\.')[0..2] -join '.'
-        1..254 | ForEach-Object -Parallel {
-            $ip = "$using:base.$_"
-            if (Test-Connection -ComputerName $ip -Count 1 -Quiet -TimeoutSeconds 1) {
-                [PSCustomObject]@{ IP = $ip }
-            }
-        } -ThrottleLimit 40 -ErrorAction SilentlyContinue | ForEach-Object {
-            if ($_.IP -and ($devices.IP -notcontains $_.IP)) {
+    foreach ($line in $arpOutput) {
+        if ($line -match "(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F-]{17})\s+(\w+)") {
+            $ip  = $matches[1]
+            $mac = $matches[2] -replace "-", ":"
+            $type = $matches[3]
+            if ($mac -ne "00:00:00:00:00:00") {
                 $devices += [PSCustomObject]@{
-                    IP       = $_.IP
-                    MAC      = "-"
-                    Hostname = "-"
-                    State    = "Responded"
-                    Source   = "Ping"
+                    IP   = $ip
+                    MAC  = $mac.ToLower()
+                    Type = $type
                 }
             }
         }
     }
 
-    # Deduplicate by IP
-    $devices = $devices | Sort-Object IP -Unique
-
-    return $devices
+    # Deduplicate by MAC
+    $devices | Sort-Object MAC -Unique
 }
 
 function Save-Report {
-    param($Devices, $NetInfo)
+    param($devices)
 
-    $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
-    $reportFile = Join-Path $ReportsDir "ShopLock_Scan_$timestamp.txt"
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $txtFile   = Join-Path $reportsDir "scan_$timestamp.txt"
+    $jsonFile  = Join-Path $reportsDir "scan_$timestamp.json"
 
-    $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine("ShopLock-Pro Network Scan Report")
-    [void]$sb.AppendLine("Generated : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
-    [void]$sb.AppendLine("Local IP  : $($NetInfo.IP)")
-    [void]$sb.AppendLine("Interface : $($NetInfo.Interface)")
-    [void]$sb.AppendLine("Subnet    : $($NetInfo.Subnet)/$($NetInfo.Prefix)")
-    [void]$sb.AppendLine("")
-    [void]$sb.AppendLine("Devices found: $($Devices.Count)")
-    [void]$sb.AppendLine("----------------------------------------")
-    [void]$sb.AppendLine(("{0,-16} {1,-18} {2,-25} {3}" -f "IP Address", "MAC Address", "Hostname", "State"))
-    [void]$sb.AppendLine("----------------------------------------")
+    $reportText = @"
+ShopLock Network Scan - $(Get-Date -Format "yyyy-MM-dd HH:mm")
+==================================================
 
-    foreach ($d in $Devices) {
-        [void]$sb.AppendLine(("{0,-16} {1,-18} {2,-25} {3}" -f $d.IP, $d.MAC, $d.Hostname, $d.State))
+Total devices found: $($devices.Count)
+
+"@
+
+    $i = 1
+    foreach ($d in $devices) {
+        $reportText += "{0,2}. IP: {1,-16}  MAC: {2,-18}  Type: {3}`n" -f $i, $d.IP, $d.MAC, $d.Type
+        $i++
     }
 
-    [void]$sb.AppendLine("")
-    [void]$sb.AppendLine("Notes:")
-    [void]$sb.AppendLine("- This is a snapshot of devices seen on the network.")
-    [void]$sb.AppendLine("- Unknown or unexpected devices should be investigated.")
-    [void]$sb.AppendLine("- POS terminal, routers, printers, and staff phones are normal.")
-    [void]$sb.AppendLine("- ShopLock does not change any router settings automatically.")
+    $reportText += @"
 
-    $sb.ToString() | Out-File -FilePath $reportFile -Encoding UTF8
+==================================================
+Next steps:
+1. Identify every device you recognize (POS, cameras, phones, printers)
+2. Anything unknown should be investigated or blocked via MAC filter
+3. Change WiFi password and enable WPA3 if not already done
+4. Collect setup fee (`$$($config.SetupFee)`) and start monthly (`$$($config.MonthlyPrice)`)
+"@
 
-    Write-Host ""
-    Write-Host "[+] Report saved:" -ForegroundColor Green
-    Write-Host "    $reportFile" -ForegroundColor White
-    return $reportFile
+    $reportText | Out-File -FilePath $txtFile -Encoding utf8
+
+    # Simple JSON
+    $jsonObj = @{
+        timestamp    = (Get-Date).ToString("o")
+        device_count = $devices.Count
+        devices      = $devices
+    }
+    $jsonObj | ConvertTo-Json -Depth 4 | Out-File -FilePath $jsonFile -Encoding utf8
+
+    return $txtFile, $jsonFile
 }
 
-function Show-LockdownChecklist {
+function Show-Checklist {
     Write-Host ""
-    Write-Host "=== Recommended Lockdown Checklist ===" -ForegroundColor Cyan
-    Write-Host "1. Log into the router (usually 192.168.0.1 or 192.168.1.1)"
-    Write-Host "2. Change the default admin password to a strong unique one"
-    Write-Host "3. Set a strong WiFi password (WPA2/WPA3) and hide SSID if desired"
-    Write-Host "4. Enable MAC filtering only if the shop has a fixed set of devices"
-    Write-Host "5. Disable WPS (WiFi Protected Setup) – it is a known weak point"
-    Write-Host "6. Create a separate Guest network for customers (isolate it)"
-    Write-Host "7. Make sure the POS terminal is on the main (trusted) network only"
-    Write-Host "8. Update router firmware if an update is available"
-    Write-Host "9. Note the list of trusted devices from this scan and keep it"
-    Write-Host "10. Schedule the monthly ShopLock check (or use the monitor)"
-    Write-Host ""
-    Write-Host "ShopLock does NOT change router settings for you." -ForegroundColor Yellow
-    Write-Host "You (or the owner) must log into the router and apply the above." -ForegroundColor Yellow
+    Write-Host "--------------------------------------------------" -ForegroundColor Green
+    Write-Host " QUICK LOCKDOWN CHECKLIST (do these with the owner)" -ForegroundColor Green
+    Write-Host "--------------------------------------------------" -ForegroundColor Green
+    Write-Host @"
+
+1. Log into the router (usually 192.168.1.1 or 192.168.0.1)
+2. Change the router ADMIN password (not just the WiFi password)
+3. Set WiFi security to WPA3-Personal (or WPA2/WPA3 mixed)
+4. Set a strong 20+ character WiFi password
+5. Turn OFF WPS
+6. Enable MAC address filtering → Allow list only
+   - Add the POS, cameras, and known staff devices
+7. Create or enable a Guest network for customers (isolated)
+8. On the POS machine:
+   - Change login / admin PIN
+   - Enable auto screen lock (30-60 seconds)
+   - Make sure Windows / POS software is fully updated
+9. Save the scan report we just made and email a copy to yourself
+10. Collect setup fee (`$$($config.SetupFee)`) and start monthly subscription (`$$($config.MonthlyPrice)`)
+
+"@
+    Write-Host "Press Enter to return to menu..." -NoNewline
+    Read-Host | Out-Null
 }
 
 function Install-Monitor {
     Write-Host ""
-    Write-Host "[*] Installing quiet background monitor (every 6 hours)..." -ForegroundColor Yellow
+    Write-Host "Installing ShopLock monitor (runs every 6 hours)..." -ForegroundColor Yellow
 
-    $monitorScript = Join-Path $ScriptDir "ShopLock-Monitor.ps1"
+    $taskName = "ShopLockMonitor"
+    $psPath   = (Get-Command powershell.exe).Source
+    $script   = Join-Path $scriptDir "ShopLock.ps1"
+    $action   = "$psPath -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`" -Monitor"
 
-    # Create a simple monitor script that diffs against last known good list
-    $monitorContent = @"
-# ShopLock quiet monitor - runs every 6 hours
-`$ScriptDir = Split-Path -Parent `$MyInvocation.MyCommand.Path
-`$AlertsDir = Join-Path `$ScriptDir "alerts"
-`$ReportsDir = Join-Path `$ScriptDir "reports"
-if (-not (Test-Path `$AlertsDir)) { New-Item -ItemType Directory -Path `$AlertsDir -Force | Out-Null }
+    # Remove old task if exists
+    schtasks /Delete /TN $taskName /F 2>$null | Out-Null
 
-`$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
-`$logFile = Join-Path `$AlertsDir "monitor_`$timestamp.txt"
+    $result = schtasks /Create /TN $taskName /TR $action /SC HOURLY /MO 6 /F /RL LIMITED 2>&1
 
-try {
-    `$neighbors = Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-                 Where-Object { `$_.State -match "Reachable|Stale|Permanent" } |
-                 Select-Object IPAddress, LinkLayerAddress
-    `$count = (`$neighbors | Measure-Object).Count
-    "ShopLock Monitor - `$(Get-Date)" | Out-File `$logFile
-    "Devices currently visible: `$count" | Out-File `$logFile -Append
-    `$neighbors | Format-Table -AutoSize | Out-String | Out-File `$logFile -Append
-} catch {
-    "Monitor error: `$_" | Out-File `$logFile
-}
-"@
-
-    $monitorContent | Out-File -FilePath $monitorScript -Encoding UTF8
-
-    # Try to create a scheduled task (requires Admin)
-    $taskName = "ShopLock-NetworkMonitor"
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$monitorScript`""
-    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Hours 6) -RepetitionDuration (New-TimeSpan -Days 365)
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-
-    try {
-        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force -ErrorAction Stop | Out-Null
-        Write-Host "[+] Monitor scheduled task installed: $taskName" -ForegroundColor Green
-        Write-Host "    It will run every 6 hours and write to the alerts folder." -ForegroundColor Gray
-    } catch {
-        Write-Host "[!] Could not create scheduled task (need to run as Administrator)." -ForegroundColor Red
-        Write-Host "    Monitor script was still created at:" -ForegroundColor Yellow
-        Write-Host "    $monitorScript" -ForegroundColor White
-        Write-Host "    You can run it manually or create the task yourself later." -ForegroundColor Gray
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "[OK] Monitor installed successfully." -ForegroundColor Green
+        Write-Host "    It will run every 6 hours in the background."
+        Write-Host "    Manage it in Task Scheduler → ShopLockMonitor"
+    } else {
+        Write-Host "[!] Could not create scheduled task." -ForegroundColor Red
+        Write-Host "    Try running this tool as Administrator."
+        Write-Host $result
     }
-}
-
-function Show-Menu {
-    Show-Header
-    Write-Host "1. Scan network & generate report"
-    Write-Host "2. Show lockdown checklist"
-    Write-Host "3. Install quiet monitor (every 6 hours)"
-    Write-Host "4. Full job (scan + checklist + optional monitor)"
-    Write-Host "5. Exit"
     Write-Host ""
-    $choice = Read-Host "Select option (1-5)"
-    return $choice
+    Write-Host "Press Enter to continue..." -NoNewline
+    Read-Host | Out-Null
 }
 
-# ========== MAIN ==========
-Show-Header
+function Run-MonitorMode {
+    # Silent mode for scheduled task
+    $devices = Get-NetworkDevices
+    $txt, $json = Save-Report $devices
 
-$netInfo = Get-LocalNetworkInfo
-if (-not $netInfo) {
-    Write-Host "[!] Could not detect a usable local network adapter." -ForegroundColor Red
-    Write-Host "    Make sure you are connected to the shop WiFi or Ethernet." -ForegroundColor Yellow
+    $alertFile = Join-Path $alertsDir ("alert_{0}.txt" -f (Get-Date -Format "yyyyMMdd_HHmmss"))
+    $body = @"
+ShopLock Monitor Report
+Time: $(Get-Date -Format "yyyy-MM-dd HH:mm")
+Devices found: $($devices.Count)
+
+Full report: $txt
+
+Device list:
+"@
+    foreach ($d in $devices) {
+        $body += "  $($d.IP.PadRight(16))  $($d.MAC)`n"
+    }
+    $body | Out-File -FilePath $alertFile -Encoding utf8
+    exit
+}
+
+# ===== MAIN =====
+if ($args -contains "-Monitor") {
+    Run-MonitorMode
+}
+
+Show-Banner
+
+do {
+    Write-Host "What do you want to do?"
+    Write-Host "  1. Scan network and create report"
+    Write-Host "  2. Install ongoing monitor (every 6 hours)"
+    Write-Host "  3. Show quick lockdown checklist"
+    Write-Host "  4. Exit"
     Write-Host ""
-    Read-Host "Press Enter to exit"
-    exit 1
-}
+    $choice = Read-Host "Choose [1-4]"
 
-$choice = Show-Menu
-
-switch ($choice) {
-    "1" {
-        $devices = Scan-NetworkDevices -NetInfo $netInfo
-        if ($devices.Count -eq 0) {
-            Write-Host "[!] No devices found. Try running as Administrator or check connection." -ForegroundColor Red
-        } else {
+    switch ($choice) {
+        "1" {
+            Write-Host ""
+            Write-Host "Scanning local network..." -ForegroundColor Yellow
+            $devices = Get-NetworkDevices
             Write-Host ""
             Write-Host "Found $($devices.Count) device(s):" -ForegroundColor Green
-            $devices | Format-Table -AutoSize
-            Save-Report -Devices $devices -NetInfo $netInfo | Out-Null
+            Write-Host ""
+            $i = 1
+            foreach ($d in $devices) {
+                Write-Host ("  {0}. {1,-16}  {2}" -f $i, $d.IP, $d.MAC)
+                $i++
+            }
+            $txtFile, $jsonFile = Save-Report $devices
+            Write-Host ""
+            Write-Host "[OK] Report saved:" -ForegroundColor Green
+            Write-Host "     $txtFile"
+            Write-Host ""
+            Write-Host "Give the .txt file to the owner or keep it for your records."
+            Write-Host ""
+            Write-Host "Press Enter to continue..." -NoNewline
+            Read-Host | Out-Null
+            Show-Banner
         }
-        Write-Host ""
-        Read-Host "Press Enter to return to menu / exit"
-    }
-    "2" {
-        Show-LockdownChecklist
-        Read-Host "Press Enter to exit"
-    }
-    "3" {
-        Install-Monitor
-        Read-Host "Press Enter to exit"
-    }
-    "4" {
-        $devices = Scan-NetworkDevices -NetInfo $netInfo
-        if ($devices.Count -gt 0) {
-            $devices | Format-Table -AutoSize
-            Save-Report -Devices $devices -NetInfo $netInfo | Out-Null
-        }
-        Show-LockdownChecklist
-        Write-Host ""
-        $install = Read-Host "Install the quiet monitor now? (y/n)"
-        if ($install -match '^[Yy]') {
+        "2" {
             Install-Monitor
+            Show-Banner
         }
-        Write-Host ""
-        Write-Host "Full job complete. Leave the report with the owner." -ForegroundColor Green
-        Read-Host "Press Enter to exit"
+        "3" {
+            Show-Checklist
+            Show-Banner
+        }
+        "4" {
+            Write-Host ""
+            Write-Host "Done. Stay safe out there." -ForegroundColor Cyan
+            Write-Host ""
+            break
+        }
+        default {
+            Write-Host "Invalid choice." -ForegroundColor Red
+            Start-Sleep -Seconds 1
+            Show-Banner
+        }
     }
-    default {
-        Write-Host "Exiting..."
-    }
-}
-
-Write-Host ""
-Write-Host "ShopLock-Pro finished." -ForegroundColor Cyan
+} while ($true)
