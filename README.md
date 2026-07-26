@@ -28,6 +28,26 @@ This will:
 - If no certificate is found, it simply skips signing and gives you a working unsigned EXE.
 - Once you buy a certificate later, just re-run `.\Build-EXE.ps1` and it will sign automatically.
 
+## Verify a signature
+
+After building (or on any machine), run:
+
+```powershell
+.\Verify-Signature.ps1
+```
+
+Or check a specific file:
+
+```powershell
+.\Verify-Signature.ps1 -Path "C:\path\to\ShopLock.exe"
+```
+
+It shows:
+- Authenticode status (Valid / NotSigned / etc.)
+- Signer name and certificate details
+- Whether a timestamp is present
+- Optional SignTool verification
+
 ## What it does
 
 - Scans every device currently on the network (via ARP)
@@ -46,6 +66,7 @@ This will:
 - `Run-ShopLock.bat` – launcher for the .ps1 version
 - `ShopLock.ps1` – the main script
 - `Build-EXE.ps1` – creates + optionally signs the single .exe
+- `Verify-Signature.ps1` – checks digital signature of the EXE
 - `PITCH.txt` – sales pitch
 - `reports/` and `alerts/` – created automatically at runtime
 
