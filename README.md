@@ -1,6 +1,6 @@
 # ShopLock-Pro
 
-Portable network & POS lockdown toolkit for independent coffee shops.  
+Portable network & POS lockdown toolkit for independent coffee shops.
 No Python needed. Works on almost every Windows PC / POS terminal.
 
 ## Quick Start (Script version)
@@ -10,9 +10,9 @@ No Python needed. Works on almost every Windows PC / POS terminal.
 3. Double-click `Run-ShopLock.bat`
 4. Follow the menu
 
-## Create a single EXE (recommended)
+## Build a single EXE (recommended)
 
-On any Windows machine with PowerShell:
+On any Windows machine with PowerShell 5.1+:
 
 ```powershell
 .\Build-EXE.ps1
@@ -21,12 +21,12 @@ On any Windows machine with PowerShell:
 This will:
 1. Install PS2EXE if needed
 2. Compile `ShopLock.ps1` into `ShopLock.exe`
-3. **Automatically code-sign** the EXE if a certificate is present and `signtool.exe` is available
+3. Auto-sign the EXE if a valid code-signing certificate and `signtool.exe` are available
 
 ### About code signing
 - If you have a code-signing certificate installed (or a USB token plugged in), the builder will sign the EXE with SHA256 + timestamp.
 - If no certificate is found, it simply skips signing and gives you a working unsigned EXE.
-- Once you buy a certificate later, just re-run `.\Build-EXE.ps1` and it will sign automatically.
+- Once you buy a certificate later, just re-run `./Build-EXE.ps1` and it will sign automatically.
 
 ## Verify a signature
 
@@ -60,6 +60,7 @@ It shows:
 - Only use on networks where the business owner has given permission
 - Never store router passwords inside the tool
 - Run as Administrator if you want the monitor task to install cleanly
+- This project is designed for Windows systems and requires PowerShell 5.1 or newer
 
 ## Files
 
@@ -72,6 +73,6 @@ It shows:
 
 ---
 
-**ShopLock by Raymond**  
-Setup: $249 | Monthly: $79  
+**ShopLock by Raymond**
+Setup: $249 | Monthly: $79
 Email: raymondrayray777@gmail.com
