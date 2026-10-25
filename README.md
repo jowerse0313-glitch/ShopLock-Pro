@@ -50,12 +50,13 @@ It shows:
 
 ## What it does
 
-- Scans the customer LAN using live network neighbor data first, ARP fallback second, and narrow subnet validation only when needed
+- Scans the customer LAN using live network neighbor data first, ARP fallback second, and narrow subnet validation when needed
 - Filters out junk and invalid MACs to keep results trustworthy
-- Saves clean `.txt` + `.json` reports with confidence metadata
+- Classifies devices as Known Good or Unknown and includes confidence metadata
+- Saves clean `.txt` + `.json` reports with summary details and action guidance
 - Installs a quiet background monitor (every 6 hours)
 - Writes logs in a `logs/` folder so each run can be reviewed and debugged
-- Shows the exact lockdown checklist for the shop owner
+- Uses a config file to support customer-specific branding and approved device lists
 
 ## Important
 
@@ -68,6 +69,7 @@ It shows:
 
 - `Run-ShopLock.bat` – launcher for the .ps1 version
 - `ShopLock.ps1` – the main script
+- `shoplock.config.json` – customer/site settings and known-good device list
 - `Build-EXE.ps1` – creates + optionally signs the single .exe
 - `Verify-Signature.ps1` – checks digital signature of the EXE
 - `PITCH.txt` – sales pitch

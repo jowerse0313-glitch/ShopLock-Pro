@@ -1,6 +1,7 @@
 # ShopLock Portable Toolkit - Pure PowerShell (no Python needed)
 # Double-click Run-ShopLock.bat or run this script directly
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $Host.UI.RawUI.WindowTitle = "ShopLock Toolkit"
 
@@ -11,12 +12,19 @@ $config = @{
     ReportEmail    = "raymondrayray777@gmail.com"
     SetupFee       = 249
     MonthlyPrice   = 79
+    CustomerName   = "Customer Site"
+    SiteName       = "Default Site"
+    KnownDevices   = @(
+        "00:11:22:33:44:55",
+        "00:AA:BB:CC:DD:EE"
+    )
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $reportsDir = Join-Path $scriptDir "reports"
 $alertsDir  = Join-Path $scriptDir "alerts"
 $logsDir    = Join-Path $scriptDir "logs"
+$configPath = Join-Path $scriptDir "shoplock.config.json"
 
 foreach ($dir in @($reportsDir, $alertsDir, $logsDir)) {
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -30,26 +38,64 @@ function Write-Status {
     Write-Host $Message -ForegroundColor $Color
 }
 
-function Get-ScanLogPath {
-    return Join-Path $logsDir ("scan_{0}.log" -f (Get-Date -Format "yyyyMMdd_HHmmss"))
-}
-
-function Write-ScanLog {
+function Write-Log {
     param([string]$Message)
-    $path = Get-ScanLogPath
-    Add-Content -Path $path -Value ("[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message) -Encoding UTF8
-    return $path
+    $logPath = Join-Path $logsDir ("shoplock_{0}.log" -f (Get-Date -Format "yyyyMMdd"))
+    $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
+    Add-Content -Path $logPath -Value $line -Encoding UTF8
 }
 
-function Show-Banner {
-    Clear-Host
-    Write-Host ""
-    Write-Host "=======================================================" -ForegroundColor Cyan
-    Write-Host "  $($config.BusinessName)" -ForegroundColor Cyan
-    Write-Host "  Operator: $($config.YourName)" -ForegroundColor Cyan
-    Write-Host "=======================================================" -ForegroundColor Cyan
-    Write-Host "  Only run this on networks you have permission to secure." -ForegroundColor Yellow
-    Write-Host ""
+function Ensure-Config {
+    if (-not (Test-Path $configPath)) {
+        $json = $config | ConvertTo-Json -Depth 5
+        $json | Out-File -FilePath $configPath -Encoding utf8
+        Write-Log "Created default config at $configPath"
+    }
+}
+
+function Load-Config {
+    Ensure-Config
+    $loaded = Get-Content -Path $configPath -Raw | ConvertFrom-Json
+    foreach ($key in $loaded.PSObject.Properties.Name) {
+        if (-not $config.ContainsKey($key)) {
+            $config[$key] = $loaded.$key
+        }
+    }
+    if ($loaded.PSObject.Properties.Name -contains 'KnownDevices') {
+        $config.KnownDevices = @($loaded.KnownDevices)
+    }
+    return $config
+}
+
+function Normalize-Mac {
+    param([string]$Mac)
+
+    if ([string]::IsNullOrWhiteSpace($Mac)) { return $null }
+
+    $normalized = $Mac.Trim().ToLower()
+    $normalized = $normalized -replace '-', ':'
+    $normalized = $normalized -replace '\s+', ''
+
+    if ($normalized -match '^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$') {
+        return $normalized
+    }
+
+    return $null
+}
+
+function Get-Classification {
+    param([string]$Mac)
+
+    $known = @($config.KnownDevices | ForEach-Object { Normalize-Mac -Mac $_ })
+    if ($known -contains $Mac) {
+        return 'Known Good'
+    }
+
+    if ($Mac -match '^00:00:00:00:00:00$') {
+        return 'Unknown / Incomplete'
+    }
+
+    return 'Unknown'
 }
 
 function Test-IsPrivateIPv4 {
@@ -114,6 +160,8 @@ function Get-SubnetHosts {
     param([string]$Cidr)
 
     $parts = $Cidr.Split('/')
+    if ($parts.Count -ne 2) { return @() }
+
     $network = $parts[0]
     $maskBits = [int]$parts[1]
 
@@ -131,30 +179,54 @@ function Get-SubnetHosts {
     return @($addresses)
 }
 
+function Show-Banner {
+    Clear-Host
+    Write-Host ""
+    Write-Host "=======================================================" -ForegroundColor Cyan
+    Write-Host "  $($config.BusinessName)" -ForegroundColor Cyan
+    Write-Host "  Operator: $($config.YourName)" -ForegroundColor Cyan
+    Write-Host "  Site: $($config.SiteName)" -ForegroundColor Cyan
+    Write-Host "=======================================================" -ForegroundColor Cyan
+    Write-Host "  Only run this on networks you have permission to secure." -ForegroundColor Yellow
+    Write-Host ""
+}
+
 function Get-NetworkDevices {
     $devicesByMac = @{}
+    $scanSources = @{
+        live = 0
+        arp = 0
+        ping = 0
+    }
 
     function Add-Device {
         param(
             [string]$Ip,
             [string]$Mac,
-            [string]$Type = 'Unknown'
+            [string]$Type = 'Unknown',
+            [string]$Source = 'unknown'
         )
 
         if ([string]::IsNullOrWhiteSpace($Ip) -or [string]::IsNullOrWhiteSpace($Mac)) { return }
 
         $normalizedIp = $Ip.Trim()
-        $normalizedMac = $Mac.Trim().ToLower()
+        $normalizedMac = Normalize-Mac -Mac $Mac
 
+        if ($normalizedMac -eq $null) { return }
         if ($normalizedIp -notmatch '^\d+\.\d+\.\d+\.\d+$') { return }
         if (-not (Test-IsPrivateIPv4 -Ip $normalizedIp)) { return }
         if ($normalizedMac -match '^(00:00:00:00:00:00|ff:ff:ff:ff:ff:ff|33:33:33:33:33:33|44:44:44:44:44:44|ac:de:48:00:00:00)$') { return }
 
         if (-not $devicesByMac.ContainsKey($normalizedMac)) {
+            $classification = Get-Classification -Mac $normalizedMac
             $devicesByMac[$normalizedMac] = [PSCustomObject]@{
-                IP   = $normalizedIp
-                MAC  = $normalizedMac
-                Type = $Type
+                IP          = $normalizedIp
+                MAC         = $normalizedMac
+                Type        = $Type
+                Source      = $Source
+                Confidence  = if ($Source -eq 'live') { 'High' } elseif ($Source -eq 'arp') { 'Medium' } elseif ($Source -eq 'ping') { 'Low' } else { 'Unknown' }
+                Classification = $classification
+                FirstSeen   = (Get-Date).ToString('o')
             }
         }
     }
@@ -163,9 +235,11 @@ function Get-NetworkDevices {
         $neighborTable = Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop
         foreach ($entry in $neighborTable) {
             if (-not $entry.IPAddress) { continue }
-            if (-not $entry.LinkLayerAddress) { continue }
+            $mac = Normalize-Mac -Mac $entry.LinkLayerAddress
+            if (-not $mac) { continue }
             if ($entry.State -notmatch 'Reachable|Stale|Delay|Probe') { continue }
-            Add-Device -Ip $entry.IPAddress -Mac $entry.LinkLayerAddress -Type $entry.State
+            Add-Device -Ip $entry.IPAddress -Mac $mac -Type $entry.State -Source 'live'
+            $scanSources.live += 1
         }
     } catch {
         # fallback to ARP below
@@ -176,9 +250,12 @@ function Get-NetworkDevices {
         foreach ($line in $arpOutput) {
             if ($line -match '(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F-]{17})\s+(\w+)') {
                 $ip  = $matches[1]
-                $mac = ($matches[2] -replace '-', ':').ToLower()
+                $mac = Normalize-Mac -Mac $matches[2]
                 $type = $matches[3]
-                Add-Device -Ip $ip -Mac $mac -Type $type
+                if ($null -ne $mac) {
+                    Add-Device -Ip $ip -Mac $mac -Type $type -Source 'arp'
+                    $scanSources.arp += 1
+                }
             }
         }
     } catch {
@@ -186,7 +263,9 @@ function Get-NetworkDevices {
     }
 
     if ($devicesByMac.Count -gt 0) {
-        return @($devicesByMac.Values | Sort-Object IP)
+        $result = @($devicesByMac.Values | Sort-Object IP)
+        $result | Add-Member -NotePropertyName ScanSourceSummary -NotePropertyValue $scanSources -Force
+        return $result
     }
 
     $scanList = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -203,19 +282,23 @@ function Get-NetworkDevices {
                 $mac = $null
                 foreach ($line in $arpEntry) {
                     if ($line -match '\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b') {
-                        $mac = ($Matches[0] -replace '-', ':').ToLower()
+                        $mac = Normalize-Mac -Mac $Matches[0]
                         break
                     }
                 }
-                if (-not $mac) { $mac = '00:00:00:00:00:00' }
-                Add-Device -Ip $ip -Mac $mac -Type 'Pinged'
+                if ($null -ne $mac) {
+                    Add-Device -Ip $ip -Mac $mac -Type 'Pinged' -Source 'ping'
+                    $scanSources.ping += 1
+                }
             }
         } catch {
             # skip unreachable hosts
         }
     }
 
-    return @($devicesByMac.Values | Sort-Object IP)
+    $result = @($devicesByMac.Values | Sort-Object IP)
+    $result | Add-Member -NotePropertyName ScanSourceSummary -NotePropertyValue $scanSources -Force
+    return $result
 }
 
 function Save-Report {
@@ -225,38 +308,61 @@ function Save-Report {
     $txtFile   = Join-Path $reportsDir "scan_$timestamp.txt"
     $jsonFile  = Join-Path $reportsDir "scan_$timestamp.json"
 
+    $summary = @{
+        timestamp = (Get-Date).ToString('o')
+        site = $config.SiteName
+        customer = $config.CustomerName
+        totalDevices = $devices.Count
+        highConfidence = @($devices | Where-Object { $_.Confidence -eq 'High' }).Count
+        mediumConfidence = @($devices | Where-Object { $_.Confidence -eq 'Medium' }).Count
+        lowConfidence = @($devices | Where-Object { $_.Confidence -eq 'Low' }).Count
+        unknownCount = @($devices | Where-Object { $_.Classification -eq 'Unknown' }).Count
+        knownCount = @($devices | Where-Object { $_.Classification -eq 'Known Good' }).Count
+    }
+
     $reportText = @"
-ShopLock Network Scan - $(Get-Date -Format "yyyy-MM-dd HH:mm")
+ShopLock Network Security Report
+Customer: $($config.CustomerName)
+Site: $($config.SiteName)
+Generated: $(Get-Date -Format "yyyy-MM-dd HH:mm")
 ==================================================
 
 Total devices found: $($devices.Count)
+Known Good: $($summary.knownCount)
+Unknown: $($summary.unknownCount)
+High confidence: $($summary.highConfidence)
+Medium confidence: $($summary.mediumConfidence)
+Low confidence: $($summary.lowConfidence)
 
 "@
 
     $i = 1
     foreach ($d in $devices) {
-        $reportText += "{0,2}. IP: {1,-16}  MAC: {2,-18}  Type: {3}`n" -f $i, $d.IP, $d.MAC, $d.Type
+        $reportText += "{0,2}. IP: {1,-16}  MAC: {2,-18}  Type: {3}  Confidence: {4}  Class: {5}`n" -f $i, $d.IP, $d.MAC, $d.Type, $d.Confidence, $d.Classification
         $i++
     }
 
     $reportText += @"
 
 ==================================================
-Next steps:
-1. Identify every device you recognize (POS, cameras, phones, printers)
-2. Anything unknown should be investigated or blocked via MAC filter
-3. Change WiFi password and enable WPA3 if not already done
-4. Collect setup fee (`$$($config.SetupFee)`) and start monthly (`$$($config.MonthlyPrice)`)
+Recommended actions:
+1. Review all unknown devices
+2. Remove or restrict any unapproved access points or wireless devices
+3. Lock the router to allowlist-only MAC access if supported
+4. Confirm POS and business devices are the only approved endpoints
+5. Collect setup fee (`$$($config.SetupFee)`) and start monthly (`$$($config.MonthlyPrice)`)
 "@
 
     $reportText | Out-File -FilePath $txtFile -Encoding utf8
 
     $jsonObj = @{
-        timestamp    = (Get-Date).ToString("o")
-        device_count = $devices.Count
-        devices      = @($devices)
+        timestamp = (Get-Date).ToString("o")
+        customer = $config.CustomerName
+        site = $config.SiteName
+        summary = $summary
+        devices = @($devices)
     }
-    $jsonObj | ConvertTo-Json -Depth 4 | Out-File -FilePath $jsonFile -Encoding utf8
+    $jsonObj | ConvertTo-Json -Depth 8 | Out-File -FilePath $jsonFile -Encoding utf8
 
     return $txtFile, $jsonFile
 }
@@ -308,6 +414,7 @@ function Install-Monitor {
             Write-Host "[OK] Monitor installed successfully." -ForegroundColor Green
             Write-Host "    It will run every 6 hours in the background." -ForegroundColor Green
             Write-Host "    Manage it in Task Scheduler → ShopLockMonitor" -ForegroundColor Green
+            Write-Log "Scheduled task installed successfully via Task Scheduler module."
         } else {
             $action = "`"$psPath`" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`" -Monitor"
             schtasks /Delete /TN $taskName /F 2>$null | Out-Null
@@ -317,15 +424,18 @@ function Install-Monitor {
                 Write-Host "[OK] Monitor installed successfully." -ForegroundColor Green
                 Write-Host "    It will run every 6 hours in the background." -ForegroundColor Green
                 Write-Host "    Manage it in Task Scheduler → ShopLockMonitor" -ForegroundColor Green
+                Write-Log "Scheduled task installed successfully via schtasks fallback."
             } else {
                 Write-Host "[!] Could not create scheduled task." -ForegroundColor Red
                 Write-Host "    Try running this tool as Administrator." -ForegroundColor Red
                 Write-Host $result -ForegroundColor Red
+                Write-Log "Scheduled task installation failed: $result"
             }
         }
     } catch {
         Write-Host "[!] Exception while creating scheduled task." -ForegroundColor Red
         Write-Host $_.Exception.Message -ForegroundColor Red
+        Write-Log "Scheduled task exception: $($_.Exception.Message)"
     }
 
     Write-Host ""
@@ -341,6 +451,8 @@ function Run-MonitorMode {
     $alertFile = Join-Path $alertsDir ("alert_{0}.txt" -f (Get-Date -Format "yyyyMMdd_HHmmss"))
     $body = @"
 ShopLock Monitor Report
+Customer: $($config.CustomerName)
+Site: $($config.SiteName)
 Time: $(Get-Date -Format "yyyy-MM-dd HH:mm")
 Duration: $((Get-Date) - $start)
 Devices found: $($devices.Count)
@@ -351,12 +463,15 @@ Device list:
 "@
 
     foreach ($d in $devices) {
-        $body += "  $($d.IP.PadRight(16))  $($d.MAC)`n"
+        $body += "  $($d.IP.PadRight(16))  $($d.MAC)  [$($d.Confidence)]  [$($d.Classification)]`n"
     }
 
     $body | Out-File -FilePath $alertFile -Encoding utf8
+    Write-Log "Monitor run completed with $($devices.Count) device(s)."
     exit 0
 }
+
+$config = Load-Config
 
 # ===== MAIN =====
 if ($args -contains "-Monitor") {
@@ -364,6 +479,7 @@ if ($args -contains "-Monitor") {
 }
 
 Show-Banner
+Write-Log "ShopLock started in interactive mode."
 
 do {
     Write-Host "What do you want to do?"
@@ -378,21 +494,27 @@ do {
         "1" {
             Write-Host ""
             Write-Status "Scanning local network ..." "Yellow"
+
+            $startTime = Get-Date
             $devices = Get-NetworkDevices
+            $scanDuration = (Get-Date) - $startTime
+
             Write-Host ""
-            Write-Status "Found $($devices.Count) device(s):" "Green"
+            Write-Status "Found $($devices.Count) device(s) in $([math]::Round($scanDuration.TotalSeconds,2))s:" "Green"
             Write-Host ""
             $i = 1
             foreach ($d in $devices) {
-                Write-Host ("  {0}. {1,-16}  {2}" -f $i, $d.IP, $d.MAC)
+                Write-Host ("  {0}. {1,-16}  {2}  [{3}]  [{4}]" -f $i, $d.IP, $d.MAC, $d.Confidence, $d.Classification)
                 $i++
             }
+
             $txtFile, $jsonFile = Save-Report $devices
             Write-Host ""
             Write-Status "[OK] Report saved:" "Green"
             Write-Host "     $txtFile"
             Write-Host ""
             Write-Host "Give the .txt file to the owner or keep it for your records."
+            Write-Log "Manual scan completed. File: $txtFile"
             Write-Host ""
             Write-Host "Press Enter to continue..." -NoNewline
             Read-Host | Out-Null
@@ -409,6 +531,7 @@ do {
         "4" {
             Write-Host ""
             Write-Status "Done. Stay safe out there." "Cyan"
+            Write-Log "ShopLock closed by user."
             Write-Host ""
             break
         }
