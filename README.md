@@ -50,12 +50,12 @@ It shows:
 
 ## What it does
 
-- Scans every device currently on the network using live neighbor data, ARP fallback, and narrow subnet validation when needed
-- Saves clean `.txt` + `.json` reports
+- Scans the customer LAN using live network neighbor data first, ARP fallback second, and narrow subnet validation only when needed
+- Filters out junk and invalid MACs to keep results trustworthy
+- Saves clean `.txt` + `.json` reports with confidence metadata
 - Installs a quiet background monitor (every 6 hours)
-- Shows the exact lockdown checklist
-- Handles real-world customer LANs where the ARP cache is stale or incomplete
-- Logs background scan performance and keeps output clean for field use
+- Writes logs in a `logs/` folder so each run can be reviewed and debugged
+- Shows the exact lockdown checklist for the shop owner
 
 ## Important
 
@@ -71,10 +71,11 @@ It shows:
 - `Build-EXE.ps1` – creates + optionally signs the single .exe
 - `Verify-Signature.ps1` – checks digital signature of the EXE
 - `PITCH.txt` – sales pitch
-- `reports/`, `alerts/`, `logs/` – generated automatically at runtime
+- `reports/`, `alerts/`, `logs/` – created automatically at runtime
 
 ---
 
 **ShopLock by Raymond**
 Setup: $249 | Monthly: $79
 Email: raymondrayray777@gmail.com
+
