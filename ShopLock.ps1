@@ -16,9 +16,11 @@ $config = @{
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $reportsDir = Join-Path $scriptDir "reports"
 $alertsDir  = Join-Path $scriptDir "alerts"
+$logsDir    = Join-Path $scriptDir "logs"
 
-if (-not (Test-Path $reportsDir)) { New-Item -ItemType Directory -Path $reportsDir -Force | Out-Null }
-if (-not (Test-Path $alertsDir))  { New-Item -ItemType Directory -Path $alertsDir  -Force | Out-Null }
+foreach ($dir in @($reportsDir, $alertsDir, $logsDir)) {
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+}
 
 function Write-Status {
     param(
@@ -26,6 +28,17 @@ function Write-Status {
         [string]$Color = 'White'
     )
     Write-Host $Message -ForegroundColor $Color
+}
+
+function Get-ScanLogPath {
+    return Join-Path $logsDir ("scan_{0}.log" -f (Get-Date -Format "yyyyMMdd_HHmmss"))
+}
+
+function Write-ScanLog {
+    param([string]$Message)
+    $path = Get-ScanLogPath
+    Add-Content -Path $path -Value ("[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message) -Encoding UTF8
+    return $path
 }
 
 function Show-Banner {
@@ -37,6 +50,21 @@ function Show-Banner {
     Write-Host "=======================================================" -ForegroundColor Cyan
     Write-Host "  Only run this on networks you have permission to secure." -ForegroundColor Yellow
     Write-Host ""
+}
+
+function Test-IsPrivateIPv4 {
+    param([string]$Ip)
+
+    if ($Ip -notmatch '^\d+\.\d+\.\d+\.\d+$') { return $false }
+
+    $octets = $Ip.Split('.') | ForEach-Object { [int]$_ }
+    $first = $octets[0]
+    $second = $octets[1]
+
+    if ($first -eq 10) { return $true }
+    if ($first -eq 172 -and $second -ge 16 -and $second -le 31) { return $true }
+    if ($first -eq 192 -and $second -eq 168) { return $true }
+    return $false
 }
 
 function Get-LocalSubnetCandidates {
@@ -53,17 +81,16 @@ function Get-LocalSubnetCandidates {
             if ($prefixLength -notin 8,16,20,24,28,30) { continue }
 
             $octets = $ip.IPv4Address.Split('.')
-            $firstOctet = [int]$octets[0]
-            $secondOctet = [int]$octets[1]
-            $thirdOctet = [int]$octets[2]
+            $first = [int]$octets[0]
+            $second = [int]$octets[1]
+            $third = [int]$octets[2]
 
-            $base = @($firstOctet, $secondOctet, $thirdOctet)
             if ($prefixLength -ge 24) {
-                $network = "$($firstOctet).$($secondOctet).$($thirdOctet).0/24"
+                $network = "$first.$second.$third.0/24"
             } elseif ($prefixLength -ge 20) {
-                $network = "$($firstOctet).$($secondOctet).0.0/16"
+                $network = "$first.$second.0.0/16"
             } else {
-                $network = "$($firstOctet).0.0.0/8"
+                $network = "$first.0.0.0/8"
             }
 
             if ($network -notmatch '^169\.254\.') {
@@ -71,12 +98,13 @@ function Get-LocalSubnetCandidates {
             }
         }
     } catch {
-        # If no adapters are available, try common office/home subnets.
+        # fallback below
     }
 
     if ($candidates.Count -eq 0) {
-        $defaultRanges = @('192.168.0.0/24', '192.168.1.0/24', '192.168.2.0/24', '10.0.0.0/24', '10.0.1.0/24', '172.16.0.0/20')
-        foreach ($range in $defaultRanges) { [void]$candidates.Add($range) }
+        foreach ($range in @('192.168.0.0/24', '192.168.1.0/24', '192.168.2.0/24', '10.0.0.0/24', '10.0.1.0/24', '172.16.0.0/20')) {
+            [void]$candidates.Add($range)
+        }
     }
 
     return @($candidates)
@@ -93,20 +121,11 @@ function Get-SubnetHosts {
     if ($maskBits -notin 8,16,20,24) { return @() }
 
     $octets = $network.Split('.') | ForEach-Object { [int]$_ }
-    $addresses = [System.Collections.Generic.List[string]]::new()
+    $addresses = New-Object 'System.Collections.Generic.List[string]'
 
-    $startHost = 1
-    $endHost = 254
-
-    foreach ($host in $startHost..$endHost) {
+    foreach ($host in 1..254) {
         $ip = "$($octets[0]).$($octets[1]).$($octets[2]).$host"
-        if ($maskBits -ge 24) {
-            $addresses.Add($ip)
-        } elseif ($maskBits -ge 20) {
-            $addresses.Add($ip)
-        } else {
-            $addresses.Add($ip)
-        }
+        $addresses.Add($ip)
     }
 
     return @($addresses)
@@ -128,6 +147,7 @@ function Get-NetworkDevices {
         $normalizedMac = $Mac.Trim().ToLower()
 
         if ($normalizedIp -notmatch '^\d+\.\d+\.\d+\.\d+$') { return }
+        if (-not (Test-IsPrivateIPv4 -Ip $normalizedIp)) { return }
         if ($normalizedMac -match '^(00:00:00:00:00:00|ff:ff:ff:ff:ff:ff|33:33:33:33:33:33|44:44:44:44:44:44|ac:de:48:00:00:00)$') { return }
 
         if (-not $devicesByMac.ContainsKey($normalizedMac)) {
@@ -170,8 +190,7 @@ function Get-NetworkDevices {
     }
 
     $scanList = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $ranges = Get-LocalSubnetCandidates
-    foreach ($range in $ranges) {
+    foreach ($range in Get-LocalSubnetCandidates) {
         foreach ($ip in Get-SubnetHosts -Cidr $range) {
             [void]$scanList.Add($ip)
         }
@@ -315,6 +334,7 @@ function Install-Monitor {
 }
 
 function Run-MonitorMode {
+    $start = Get-Date
     $devices = Get-NetworkDevices
     $txt, $json = Save-Report $devices
 
@@ -322,6 +342,7 @@ function Run-MonitorMode {
     $body = @"
 ShopLock Monitor Report
 Time: $(Get-Date -Format "yyyy-MM-dd HH:mm")
+Duration: $((Get-Date) - $start)
 Devices found: $($devices.Count)
 
 Full report: $txt

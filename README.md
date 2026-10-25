@@ -50,11 +50,12 @@ It shows:
 
 ## What it does
 
-- Scans every device currently on the network (via ARP and local subnet discovery)
+- Scans every device currently on the network using live neighbor data, ARP fallback, and narrow subnet validation when needed
 - Saves clean `.txt` + `.json` reports
 - Installs a quiet background monitor (every 6 hours)
 - Shows the exact lockdown checklist
 - Handles real-world customer LANs where the ARP cache is stale or incomplete
+- Logs background scan performance and keeps output clean for field use
 
 ## Important
 
@@ -70,7 +71,7 @@ It shows:
 - `Build-EXE.ps1` – creates + optionally signs the single .exe
 - `Verify-Signature.ps1` – checks digital signature of the EXE
 - `PITCH.txt` – sales pitch
-- `reports/` and `alerts/` – created automatically at runtime
+- `reports/`, `alerts/`, `logs/` – generated automatically at runtime
 
 ---
 
