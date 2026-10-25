@@ -50,10 +50,11 @@ It shows:
 
 ## What it does
 
-- Scans every device currently on the network (via ARP)
+- Scans every device currently on the network (via ARP and local subnet discovery)
 - Saves clean `.txt` + `.json` reports
 - Installs a quiet background monitor (every 6 hours)
 - Shows the exact lockdown checklist
+- Handles real-world customer LANs where the ARP cache is stale or incomplete
 
 ## Important
 

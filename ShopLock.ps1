@@ -1,7 +1,7 @@
 # ShopLock Portable Toolkit - Pure PowerShell (no Python needed)
 # Double-click Run-ShopLock.bat or run this script directly
 
-$ErrorActionPreference = "SilentlyContinue"
+$ErrorActionPreference = "Stop"
 $Host.UI.RawUI.WindowTitle = "ShopLock Toolkit"
 
 # ===== CONFIG =====
@@ -39,6 +39,79 @@ function Show-Banner {
     Write-Host ""
 }
 
+function Get-LocalSubnetCandidates {
+    $candidates = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+
+    try {
+        $ips = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop
+        foreach ($ip in $ips) {
+            if (-not $ip.IPv4Address) { continue }
+            if ($ip.IPv4Address -match '127\.0\.0\.1') { continue }
+            if ($ip.IPv4Address -match '^169\.254\.') { continue }
+
+            $prefixLength = $ip.PrefixLength
+            if ($prefixLength -notin 8,16,20,24,28,30) { continue }
+
+            $octets = $ip.IPv4Address.Split('.')
+            $firstOctet = [int]$octets[0]
+            $secondOctet = [int]$octets[1]
+            $thirdOctet = [int]$octets[2]
+
+            $base = @($firstOctet, $secondOctet, $thirdOctet)
+            if ($prefixLength -ge 24) {
+                $network = "$($firstOctet).$($secondOctet).$($thirdOctet).0/24"
+            } elseif ($prefixLength -ge 20) {
+                $network = "$($firstOctet).$($secondOctet).0.0/16"
+            } else {
+                $network = "$($firstOctet).0.0.0/8"
+            }
+
+            if ($network -notmatch '^169\.254\.') {
+                [void]$candidates.Add($network)
+            }
+        }
+    } catch {
+        # If no adapters are available, try common office/home subnets.
+    }
+
+    if ($candidates.Count -eq 0) {
+        $defaultRanges = @('192.168.0.0/24', '192.168.1.0/24', '192.168.2.0/24', '10.0.0.0/24', '10.0.1.0/24', '172.16.0.0/20')
+        foreach ($range in $defaultRanges) { [void]$candidates.Add($range) }
+    }
+
+    return @($candidates)
+}
+
+function Get-SubnetHosts {
+    param([string]$Cidr)
+
+    $parts = $Cidr.Split('/')
+    $network = $parts[0]
+    $maskBits = [int]$parts[1]
+
+    if ($network -notmatch '^\d+\.\d+\.\d+\.\d+$') { return @() }
+    if ($maskBits -notin 8,16,20,24) { return @() }
+
+    $octets = $network.Split('.') | ForEach-Object { [int]$_ }
+    $addresses = [System.Collections.Generic.List[string]]::new()
+
+    $startHost = 1
+    $endHost = 254
+
+    foreach ($host in $startHost..$endHost) {
+        $ip = "$($octets[0]).$($octets[1]).$($octets[2]).$host"
+        if ($maskBits -ge 24) {
+            $addresses.Add($ip)
+        } elseif ($maskBits -ge 20) {
+            $addresses.Add($ip)
+        } else {
+            $addresses.Add($ip)
+        }
+    }
+
+    return @($addresses)
+}
+
 function Get-NetworkDevices {
     $devicesByMac = @{}
 
@@ -49,20 +122,13 @@ function Get-NetworkDevices {
             [string]$Type = 'Unknown'
         )
 
-        if ([string]::IsNullOrWhiteSpace($Ip) -or [string]::IsNullOrWhiteSpace($Mac)) {
-            return
-        }
+        if ([string]::IsNullOrWhiteSpace($Ip) -or [string]::IsNullOrWhiteSpace($Mac)) { return }
 
         $normalizedIp = $Ip.Trim()
         $normalizedMac = $Mac.Trim().ToLower()
 
-        if ($normalizedIp -notmatch '^\d+\.\d+\.\d+\.\d+$') {
-            return
-        }
-
-        if ($normalizedMac -match '^(00:00:00:00:00:00|ff:ff:ff:ff:ff:ff|33:33:33:33:33:33|44:44:44:44:44:44|ac:de:48:00:00:00)$') {
-            return
-        }
+        if ($normalizedIp -notmatch '^\d+\.\d+\.\d+\.\d+$') { return }
+        if ($normalizedMac -match '^(00:00:00:00:00:00|ff:ff:ff:ff:ff:ff|33:33:33:33:33:33|44:44:44:44:44:44|ac:de:48:00:00:00)$') { return }
 
         if (-not $devicesByMac.ContainsKey($normalizedMac)) {
             $devicesByMac[$normalizedMac] = [PSCustomObject]@{
@@ -73,20 +139,18 @@ function Get-NetworkDevices {
         }
     }
 
-    # Prefer the OS ARP table; it is more reliable on real customer networks than a single stale cache.
     try {
-        $netNeighbor = Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop
-        foreach ($entry in $netNeighbor) {
+        $neighborTable = Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop
+        foreach ($entry in $neighborTable) {
             if (-not $entry.IPAddress) { continue }
             if (-not $entry.LinkLayerAddress) { continue }
             if ($entry.State -notmatch 'Reachable|Stale|Delay|Probe') { continue }
             Add-Device -Ip $entry.IPAddress -Mac $entry.LinkLayerAddress -Type $entry.State
         }
     } catch {
-        # Ignore and fall back to the classic ARP output below.
+        # fallback to ARP below
     }
 
-    # Fall back to the classic `arp -a` output for older or locked-down Windows installs.
     try {
         $arpOutput = arp -a 2>$null
         foreach ($line in $arpOutput) {
@@ -98,50 +162,41 @@ function Get-NetworkDevices {
             }
         }
     } catch {
-        # no-op
+        # ignore
     }
 
-    # Some customer networks do not populate ARP immediately. Run a very small ping sweep on common LAN subnets
-    # only when ARP does not show anything useful. This keeps it fast and avoids scanning random Internet ranges.
-    if ($devicesByMac.Count -eq 0) {
-        $commonRanges = @(
-            '192.168.0.0/24',
-            '192.168.1.0/24',
-            '192.168.2.0/24',
-            '10.0.0.0/24',
-            '10.0.1.0/24',
-            '172.16.0.0/20'
-        )
+    if ($devicesByMac.Count -gt 0) {
+        return @($devicesByMac.Values | Sort-Object IP)
+    }
 
-        foreach ($cidr in $commonRanges) {
-            $networkParts = $cidr.Split('/')
-            $baseIp = $networkParts[0]
-            $maskBits = [int]$networkParts[1]
-
-            if ($baseIp -notmatch '^\d+\.\d+\.\d+\.\d+$') { continue }
-            if ($maskBits -ne 24 -and $maskBits -ne 20) { continue }
-
-            $octets = $baseIp.Split('.')
-            $networkBase = [int]$octets[0..2] -join '.'
-            $scanMax = 254
-
-            foreach ($host in 1..$scanMax) {
-                $candidate = "$($octets[0]).$($octets[1]).$($octets[2]).$host"
-                if ($candidate -like '*.0' -or $candidate -like '*.255') { continue }
-
-                try {
-                    if (Test-Connection -ComputerName $candidate -Count 1 -Quiet -TimeoutSeconds 0.35) {
-                        Add-Device -Ip $candidate -Mac "00:00:00:00:00:00" -Type 'Pinged'
-                    }
-                } catch {
-                    # ignore unreachable hosts
-                }
-            }
+    $scanList = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $ranges = Get-LocalSubnetCandidates
+    foreach ($range in $ranges) {
+        foreach ($ip in Get-SubnetHosts -Cidr $range) {
+            [void]$scanList.Add($ip)
         }
     }
 
-    $result = @($devicesByMac.Values | Sort-Object IP)
-    return $result
+    foreach ($ip in $scanList) {
+        try {
+            if (Test-Connection -ComputerName $ip -Count 1 -Quiet -TimeoutSeconds 0.4) {
+                $arpEntry = arp -a $ip 2>$null
+                $mac = $null
+                foreach ($line in $arpEntry) {
+                    if ($line -match '\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b') {
+                        $mac = ($Matches[0] -replace '-', ':').ToLower()
+                        break
+                    }
+                }
+                if (-not $mac) { $mac = '00:00:00:00:00:00' }
+                Add-Device -Ip $ip -Mac $mac -Type 'Pinged'
+            }
+        } catch {
+            # skip unreachable hosts
+        }
+    }
+
+    return @($devicesByMac.Values | Sort-Object IP)
 }
 
 function Save-Report {
@@ -180,7 +235,7 @@ Next steps:
     $jsonObj = @{
         timestamp    = (Get-Date).ToString("o")
         device_count = $devices.Count
-        devices      = $devices
+        devices      = @($devices)
     }
     $jsonObj | ConvertTo-Json -Depth 4 | Out-File -FilePath $jsonFile -Encoding utf8
 
@@ -260,7 +315,6 @@ function Install-Monitor {
 }
 
 function Run-MonitorMode {
-    # Silent mode for scheduled task
     $devices = Get-NetworkDevices
     $txt, $json = Save-Report $devices
 
